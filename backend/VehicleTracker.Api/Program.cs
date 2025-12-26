@@ -35,6 +35,9 @@ if (!string.IsNullOrEmpty(connectionString))
     // Register repository
     builder.Services.AddScoped<ITrackingRepository, TrackingRepository>();
     
+    // Register external vehicle sync service
+    builder.Services.AddScoped<IExternalVehicleSyncService, ExternalVehicleSyncService>();
+    
     // Register Datatrack background sync service
     builder.Services.AddHostedService<DatatrackSyncService>();
 }

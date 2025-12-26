@@ -12,6 +12,8 @@ public class Location
     public int? Heading { get; set; }
     public int? Hdop { get; set; }
     public int? Sats { get; set; }
+    public double Distance { get; set; }  // Odometer in meters
+    public int GpsFlags { get; set; }     // GPS quality flags
     
     // Computed properties
     public DateTime DateTimeUtc => DateTimeOffset.FromUnixTimeSeconds(Date).UtcDateTime;

@@ -121,7 +121,7 @@ public class TrackingController : ControllerBase
                 v.Serial,
                 v.Name,
                 v.Vin,
-                v.Color
+                Color = v.ColorName
             }));
         }
 
@@ -137,7 +137,7 @@ public class TrackingController : ControllerBase
                 v.Serial,
                 v.Name,
                 v.Vin,
-                v.Color
+                Color = v.ColorName
             });
 
         return Ok(available);

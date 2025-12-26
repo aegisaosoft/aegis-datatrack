@@ -132,8 +132,8 @@ public class DatatrackSyncService : BackgroundService
                         Longitude = (decimal)status.Lng,
                         SpeedKmh = (short)status.Speed,
                         LocationTypeId = (short)status.TypeId,
-                        VoltageMv = status.Volts,
-                        OdometerMeters = status.Distance,
+                        VoltageMv = (int)status.Volts,
+                        OdometerMeters = (long)status.Distance,
                         IsMoving = status.TypeId == 5,
                         IgnitionOn = status.TypeId == 4 || status.TypeId == 5,
                         StarterDisabled = status.Disabled > 0,
@@ -220,7 +220,7 @@ public class DatatrackSyncService : BackgroundService
                     StartTime = deviceTimestamp,
                     StartLatitude = (decimal)status.Lat,
                     StartLongitude = (decimal)status.Lng,
-                    StartOdometerMeters = status.Distance,
+                    StartOdometerMeters = (long)status.Distance,
                     Status = "in_progress"
                 });
             }
@@ -248,12 +248,12 @@ public class DatatrackSyncService : BackgroundService
                 activeTrip.EndTime = deviceTimestamp;
                 activeTrip.EndLatitude = (decimal)status.Lat;
                 activeTrip.EndLongitude = (decimal)status.Lng;
-                activeTrip.EndOdometerMeters = status.Distance;
+                activeTrip.EndOdometerMeters = (long)status.Distance;
                 activeTrip.Status = "completed";
                 
                 if (activeTrip.StartOdometerMeters.HasValue && status.Distance > 0)
                 {
-                    activeTrip.DistanceMeters = (int)(status.Distance - activeTrip.StartOdometerMeters.Value);
+                    activeTrip.DistanceMeters = (int)((long)status.Distance - activeTrip.StartOdometerMeters.Value);
                 }
 
                 await repository.UpdateTripAsync(activeTrip);
@@ -273,7 +273,7 @@ public class DatatrackSyncService : BackgroundService
         }
 
         // Detect low battery
-        if (status.Volts < 11500 && currentStatus.VoltageMv >= 11500) // Less than 11.5V
+        if ((int)status.Volts < 11500 && currentStatus.VoltageMv >= 11500) // Less than 11.5V
         {
             await repository.InsertEventAsync(new VehicleEvent
             {
@@ -309,7 +309,12 @@ public class DatatrackSyncService : BackgroundService
                 {
                     // Fetch locations for the last sync interval
                     var hoursBack = Math.Max(1, (int)(_locationSyncInterval.TotalHours * 2));
-                    var locations = await datatrackService.GetLocationsAsync(device.Serial, hoursBack);
+                    var endTime = DateTimeOffset.UtcNow;
+                    var startTime = endTime.AddHours(-hoursBack);
+                    var startSecs = startTime.ToUnixTimeSeconds();
+                    var endSecs = endTime.ToUnixTimeSeconds();
+                    
+                    var locations = await datatrackService.GetLocationsAsync(device.Serial, startSecs, endSecs);
 
                     if (locations == null || locations.Count == 0) continue;
 
@@ -334,7 +339,7 @@ public class DatatrackSyncService : BackgroundService
                             Latitude = (decimal)l.Lat,
                             Longitude = (decimal)l.Lng,
                             SpeedKmh = (short)l.Speed,
-                            OdometerMeters = l.Distance,
+                            OdometerMeters = (long)l.Distance,
                             LocationTypeId = (short)l.TypeId,
                             GpsQuality = (short)l.GpsFlags,
                             IgnitionOn = l.TypeId == 4 || l.TypeId == 5,

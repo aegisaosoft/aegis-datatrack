@@ -52,7 +52,7 @@ public class TrackingDevice
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
     // Navigation property
-    public virtual Vehicle? Vehicle { get; set; }
+    public virtual RentalVehicle? Vehicle { get; set; }
 }
 
 /// <summary>
@@ -170,7 +170,7 @@ public class VehicleTrackingStatus
     public DateTime LastUpdated { get; set; } = DateTime.UtcNow;
 
     // Navigation property
-    public virtual Vehicle? Vehicle { get; set; }
+    public virtual RentalVehicle? Vehicle { get; set; }
 }
 
 /// <summary>
@@ -340,7 +340,7 @@ public class TrackingSyncLog
 /// Vehicle from the rental system (aegis_ao_rental.vehicles)
 /// </summary>
 [Table("vehicles")]
-public class Vehicle
+public class RentalVehicle
 {
     [Key]
     [Column("id")]
@@ -406,7 +406,7 @@ public class Vehicle
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
     // Navigation properties
-    public virtual Company? Company { get; set; }
+    public virtual RentalCompany? Company { get; set; }
     public virtual TrackingDevice? TrackingDevice { get; set; }
     public virtual VehicleTrackingStatus? TrackingStatus { get; set; }
 }
@@ -415,7 +415,7 @@ public class Vehicle
 /// Company from the rental system (aegis_ao_rental.companies)
 /// </summary>
 [Table("companies")]
-public class Company
+public class RentalCompany
 {
     [Key]
     [Column("id")]

@@ -9,8 +9,16 @@ public class TrackingDbContext : DbContext
     {
     }
 
-    public DbSet<Company> Companies => Set<Company>();
-    public DbSet<Vehicle> Vehicles => Set<Vehicle>();
+    // Rental system tables
+    public DbSet<RentalCompany> Companies => Set<RentalCompany>();
+    public DbSet<RentalVehicle> Vehicles => Set<RentalVehicle>();
+    
+    // External integration tables
+    public DbSet<ExternalCompany> ExternalCompanies => Set<ExternalCompany>();
+    public DbSet<ExternalCompanyVehicle> ExternalCompanyVehicles => Set<ExternalCompanyVehicle>();
+    public DbSet<ExternalVehicle> ExternalVehicles => Set<ExternalVehicle>();
+    
+    // Tracking tables
     public DbSet<TrackingDevice> TrackingDevices => Set<TrackingDevice>();
     public DbSet<VehicleLocation> VehicleLocations => Set<VehicleLocation>();
     public DbSet<VehicleTrackingStatus> VehicleTrackingStatuses => Set<VehicleTrackingStatus>();
@@ -23,14 +31,14 @@ public class TrackingDbContext : DbContext
         base.OnModelCreating(modelBuilder);
 
         // Company configuration
-        modelBuilder.Entity<Company>(entity =>
+        modelBuilder.Entity<RentalCompany>(entity =>
         {
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.Email).IsUnique();
         });
 
         // Vehicle configuration
-        modelBuilder.Entity<Vehicle>(entity =>
+        modelBuilder.Entity<RentalVehicle>(entity =>
         {
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.LicensePlate).IsUnique();
@@ -41,6 +49,44 @@ public class TrackingDbContext : DbContext
             entity.HasOne(e => e.Company)
                 .WithMany()
                 .HasForeignKey(e => e.CompanyId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // External Company configuration
+        modelBuilder.Entity<ExternalCompany>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.CompanyName).IsUnique();
+        });
+
+        // External Company Vehicle configuration
+        modelBuilder.Entity<ExternalCompanyVehicle>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ExternalCompanyId, e.ExternalId }).IsUnique();
+            entity.HasIndex(e => e.ExternalId);
+
+            entity.HasOne(e => e.ExternalCompany)
+                .WithMany(c => c.Vehicles)
+                .HasForeignKey(e => e.ExternalCompanyId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // External Vehicle (link table) configuration
+        modelBuilder.Entity<ExternalVehicle>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.ExternalCompanyVehicleId).IsUnique();
+            entity.HasIndex(e => e.VehicleId);
+
+            entity.HasOne(e => e.Vehicle)
+                .WithMany()
+                .HasForeignKey(e => e.VehicleId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.ExternalCompanyVehicle)
+                .WithOne(ecv => ecv.ExternalVehicle)
+                .HasForeignKey<ExternalVehicle>(e => e.ExternalCompanyVehicleId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
