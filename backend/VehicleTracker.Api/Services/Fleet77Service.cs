@@ -997,25 +997,111 @@ public class Fleet77Service : IFleet77Service
         try
         {
             var doc = await SendRequestAsync("getAllData");
-            if (doc == null) return new List<Vehicle>();
+            if (doc == null) 
+            {
+                _logger.LogWarning("GetAllVehiclesAsync: SendRequestAsync returned null");
+                return new List<Vehicle>();
+            }
 
             var vehicles = new List<Vehicle>();
             var root = doc.RootElement;
 
-            if (root.TryGetProperty("vehicles", out var vehiclesArray))
+            // Debug: log root properties
+            var rootProps = new List<string>();
+            foreach (var prop in root.EnumerateObject())
             {
+                rootProps.Add(prop.Name);
+            }
+            _logger.LogInformation("GetAllVehiclesAsync: root properties = [{Props}]", string.Join(", ", rootProps));
+            
+            // Check status
+            if (root.TryGetProperty("status", out var statusProp))
+            {
+                _logger.LogInformation("GetAllVehiclesAsync: status = {Status}", statusProp.GetInt32());
+            }
+
+            // Vehicles are in account.vehicles (NOT data.vehicles)
+            JsonElement vehiclesArray;
+            bool foundVehicles = false;
+            
+            if (root.TryGetProperty("account", out var account))
+            {
+                // Log account properties
+                var accountProps = new List<string>();
+                if (account.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var prop in account.EnumerateObject())
+                    {
+                        accountProps.Add(prop.Name);
+                    }
+                }
+                _logger.LogInformation("GetAllVehiclesAsync: account properties = [{Props}]", string.Join(", ", accountProps));
+                
+                if (account.TryGetProperty("vehicles", out vehiclesArray))
+                {
+                    _logger.LogInformation("Found {Count} vehicles in account.vehicles", vehiclesArray.GetArrayLength());
+                    foundVehicles = true;
+                    
+                    foreach (var v in vehiclesArray.EnumerateArray())
+                    {
+                        // Use "id" as Serial to match with statuses (vehicleId)
+                        var id = v.TryGetProperty("id", out var idProp) ? idProp.GetInt64().ToString() : "";
+                        var deviceSerial = v.TryGetProperty("serial", out var s) ? s.GetString() ?? "" : "";
+                        
+                        var vehicle = new Vehicle
+                        {
+                            Serial = id,  // Match with vehicleId from statuses
+                            Name = v.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
+                            Notes = v.TryGetProperty("notes", out var notes) ? notes.GetString() : null,
+                            Vin = v.TryGetProperty("vin", out var vin) ? vin.GetString() : null,
+                            Plate = v.TryGetProperty("plate", out var plate) ? plate.GetString() : null,
+                            Make = v.TryGetProperty("make", out var make) ? make.GetString() : null,
+                            Model = v.TryGetProperty("model", out var model) ? model.GetString() : null,
+                            Year = v.TryGetProperty("year", out var year) ? year.GetInt32() : 0,
+                            VehicleColor = v.TryGetProperty("vehicleColor", out var color) ? color.GetInt32() : 0,
+                            AlternateName = deviceSerial,  // Store device serial in AlternateName
+                            OdometerOffset = v.TryGetProperty("odometerOffset", out var odo) ? (int)odo.GetDouble() : 0
+                        };
+                        vehicles.Add(vehicle);
+                    }
+                }
+            }
+            
+            // Fallback to root.vehicles
+            if (!foundVehicles && root.TryGetProperty("vehicles", out vehiclesArray))
+            {
+                _logger.LogInformation("Found {Count} vehicles in root.vehicles", vehiclesArray.GetArrayLength());
+                
                 foreach (var v in vehiclesArray.EnumerateArray())
                 {
+                    // Use "id" as Serial to match with statuses (vehicleId)
+                    var id = v.TryGetProperty("id", out var idProp) ? idProp.GetInt64().ToString() : "";
+                    var deviceSerial = v.TryGetProperty("serial", out var s) ? s.GetString() ?? "" : "";
+                    
                     var vehicle = new Vehicle
                     {
-                        Serial = v.GetProperty("serial").GetString() ?? "",
+                        Serial = id,  // Match with vehicleId from statuses
                         Name = v.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
-                        Notes = v.TryGetProperty("description", out var d) ? d.GetString() : null
+                        Notes = v.TryGetProperty("notes", out var notes) ? notes.GetString() : null,
+                        Vin = v.TryGetProperty("vin", out var vin) ? vin.GetString() : null,
+                        Plate = v.TryGetProperty("plate", out var plate) ? plate.GetString() : null,
+                        Make = v.TryGetProperty("make", out var make) ? make.GetString() : null,
+                        Model = v.TryGetProperty("model", out var model) ? model.GetString() : null,
+                        Year = v.TryGetProperty("year", out var year) ? year.GetInt32() : 0,
+                        VehicleColor = v.TryGetProperty("vehicleColor", out var color) ? color.GetInt32() : 0,
+                        AlternateName = deviceSerial,  // Store device serial in AlternateName
+                        OdometerOffset = v.TryGetProperty("odometerOffset", out var odo) ? (int)odo.GetDouble() : 0
                     };
                     vehicles.Add(vehicle);
                 }
             }
+            
+            if (vehicles.Count == 0)
+            {
+                _logger.LogWarning("No vehicles found in response");
+            }
 
+            _logger.LogInformation("Returning {Count} vehicles with details", vehicles.Count);
             return vehicles;
         }
         catch (Exception ex)

@@ -6,6 +6,7 @@ import VehicleDetails from './components/VehicleDetails';
 import MultiVehiclePanel from './components/MultiVehiclePanel';
 import Header from './components/Header';
 import CredentialsModal from './components/CredentialsModal';
+import VehiclesPage from './components/VehiclesPage';
 import { vehicleApi, companyApi } from './services/api';
 
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
@@ -39,6 +40,7 @@ function App() {
   const [historyHours, setHistoryHours] = useState(24);
   const [showHistories, setShowHistories] = useState(false);
   const [trackingMode, setTrackingMode] = useState('multi'); // 'single' or 'multi'
+  const [currentView, setCurrentView] = useState('map'); // 'map' or 'vehicles'
 
   // Modal for tracker credentials
   const [showCredentialsModal, setShowCredentialsModal] = useState(false);
@@ -364,6 +366,16 @@ function App() {
     }
   };
 
+  // Handle vehicle selection from Vehicles page - switch to map view
+  const handleVehicleSelectFromList = (vehicle) => {
+    // Find the vehicle in statuses (by serial)
+    const vehicleStatus = vehicles.find(v => v.serial === vehicle.serial);
+    if (vehicleStatus) {
+      handleVehicleSelect(vehicleStatus, false);
+      setCurrentView('map');
+    }
+  };
+
   // Get selected vehicle objects
   const selectedVehicleObjects = vehicles.filter(v => 
     selectedVehicles.includes(v.serial)
@@ -408,6 +420,42 @@ function App() {
             <div className="flex items-center justify-between h-14">
               <div className="flex items-center gap-6">
                 <h1 className="text-lg font-bold text-gray-900">Vehicle Tracker</h1>
+                
+                {/* View Tabs */}
+                {activeCompany && (
+                  <div className="flex items-center border-l pl-4 ml-2">
+                    <button
+                      onClick={() => setCurrentView('map')}
+                      className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                        currentView === 'map'
+                          ? 'bg-blue-100 text-blue-700'
+                          : 'text-gray-600 hover:bg-gray-100'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+                        </svg>
+                        Map
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => setCurrentView('vehicles')}
+                      className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                        currentView === 'vehicles'
+                          ? 'bg-blue-100 text-blue-700'
+                          : 'text-gray-600 hover:bg-gray-100'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                        </svg>
+                        Vehicles
+                      </span>
+                    </button>
+                  </div>
+                )}
                 
                 {/* Company Selector */}
                 <div className="flex items-center gap-2 ml-4 pl-4 border-l">
@@ -495,7 +543,7 @@ function App() {
           </div>
         )}
 
-        {activeCompany && (
+        {activeCompany && currentView === 'map' && (
         <div className="flex-1 flex overflow-hidden h-full">
           {/* Vehicle List Sidebar */}
           <div className="w-80 bg-white shadow-lg overflow-y-auto flex-shrink-0 h-full">
@@ -573,6 +621,19 @@ function App() {
             </div>
           )}
         </div>
+        )}
+
+        {/* Vehicles Page View */}
+        {activeCompany && currentView === 'vehicles' && (
+          <div className="flex-1 overflow-hidden">
+            <VehiclesPage 
+              onSelectVehicle={handleVehicleSelectFromList}
+              vehicleStatuses={vehicles}
+              isLoading={isLoading}
+              onRefresh={handleRefresh}
+              selectedCompanyId={activeCompany?.id}
+            />
+          </div>
         )}
       </div>
     </LoadScript>

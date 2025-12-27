@@ -438,3 +438,65 @@ public class RentalCompany
     [Column("updated_at")]
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }
+
+/// <summary>
+/// Model catalog from rental system (aegis_ao_rental.models)
+/// </summary>
+[Table("models")]
+public class RentalModel
+{
+    [Key]
+    [Column("id")]
+    public Guid Id { get; set; }
+
+    [Required]
+    [Column("make")]
+    [MaxLength(100)]
+    public string Make { get; set; } = string.Empty;
+
+    [Required]
+    [Column("model")]
+    [MaxLength(100)]
+    public string ModelName { get; set; } = string.Empty;
+
+    [Required]
+    [Column("year")]
+    public int Year { get; set; }
+
+    [Column("fuel_type")]
+    [MaxLength(50)]
+    public string? FuelType { get; set; }
+
+    [Column("transmission")]
+    [MaxLength(50)]
+    public string? Transmission { get; set; }
+
+    [Column("seats")]
+    public int? Seats { get; set; }
+
+    [Column("category_id")]
+    public Guid? CategoryId { get; set; }
+}
+
+/// <summary>
+/// Vehicle model catalog linking companies to models (aegis_ao_rental.vehicle_model)
+/// </summary>
+[Table("vehicle_model")]
+public class RentalVehicleModel
+{
+    [Key]
+    [Column("id")]
+    public Guid Id { get; set; }
+
+    [Column("company_id")]
+    public Guid CompanyId { get; set; }
+
+    [Column("model_id")]
+    public Guid ModelId { get; set; }
+
+    [Column("daily_rate")]
+    public decimal? DailyRate { get; set; }
+
+    [Column("created_at")]
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}

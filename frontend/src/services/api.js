@@ -151,6 +151,15 @@ export const vehicleApi = {
     const response = await api.post(`/vehicles/${serial}/buzzer`, { disable }, { params: withCompany() });
     return response.data;
   },
+
+  // Sync vehicles to rental database
+  syncVehicles: async (companyId, vehicles) => {
+    const response = await api.post('/vehicles/sync', { 
+      externalCompanyId: companyId,
+      vehicles: vehicles 
+    });
+    return response.data;
+  },
 };
 
 export default api;

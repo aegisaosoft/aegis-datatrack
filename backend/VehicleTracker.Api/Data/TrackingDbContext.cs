@@ -12,6 +12,8 @@ public class TrackingDbContext : DbContext
     // Rental system tables
     public DbSet<RentalCompany> Companies => Set<RentalCompany>();
     public DbSet<RentalVehicle> Vehicles => Set<RentalVehicle>();
+    public DbSet<RentalModel> Models => Set<RentalModel>();
+    public DbSet<RentalVehicleModel> VehicleModels => Set<RentalVehicleModel>();
     
     // External integration tables
     public DbSet<ExternalCompany> ExternalCompanies => Set<ExternalCompany>();
