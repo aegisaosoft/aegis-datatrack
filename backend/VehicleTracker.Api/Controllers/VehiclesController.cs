@@ -8,27 +8,90 @@ namespace VehicleTracker.Api.Controllers;
 [Route("api/[controller]")]
 public class VehiclesController : ControllerBase
 {
-    private readonly IDatatrackService _datatrackService;
+    private readonly IFleet77Service _fleet77Service;
     private readonly ILogger<VehiclesController> _logger;
 
     public VehiclesController(
-        IDatatrackService datatrackService, 
+        IFleet77Service fleet77Service, 
         ILogger<VehiclesController> logger)
     {
-        _datatrackService = datatrackService;
+        _fleet77Service = fleet77Service;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Set active company for API calls (call this before other endpoints)
+    /// </summary>
+    [HttpPost("select-company/{companyId}")]
+    public ActionResult SelectCompany(Guid companyId)
+    {
+        _fleet77Service.SetActiveCompany(companyId);
+        return Ok(new { message = "Company selected", companyId });
+    }
+
+    /// <summary>
+    /// Get currently selected company
+    /// </summary>
+    [HttpGet("active-company")]
+    public ActionResult GetActiveCompany()
+    {
+        var companyId = _fleet77Service.GetActiveCompanyId();
+        if (!companyId.HasValue)
+        {
+            return Ok(new { hasActiveCompany = false });
+        }
+        return Ok(new { hasActiveCompany = true, companyId = companyId.Value });
+    }
+
+    private void EnsureCompanySelected(Guid? companyId)
+    {
+        if (companyId.HasValue)
+        {
+            _fleet77Service.SetActiveCompany(companyId.Value);
+        }
+    }
+
+    /// <summary>
+    /// Debug: Get raw API response
+    /// </summary>
+    [HttpGet("debug/raw")]
+    public async Task<ActionResult> GetRawResponse([FromQuery] Guid? companyId)
+    {
+        try
+        {
+            EnsureCompanySelected(companyId);
+            var statuses = await _fleet77Service.GetAllVehicleStatusesAsync();
+            return Ok(new { 
+                count = statuses.Count, 
+                vehicles = statuses,
+                companyId = companyId
+            });
+        }
+        catch (Exception ex)
+        {
+            return Ok(new { 
+                error = ex.Message, 
+                innerError = ex.InnerException?.Message,
+                stack = ex.StackTrace?.Substring(0, Math.Min(500, ex.StackTrace?.Length ?? 0))
+            });
+        }
     }
 
     /// <summary>
     /// Get all vehicle statuses with current locations
     /// </summary>
     [HttpGet("statuses")]
-    public async Task<ActionResult<List<VehicleStatus>>> GetAllStatuses()
+    public async Task<ActionResult<List<VehicleStatus>>> GetAllStatuses([FromQuery] Guid? companyId)
     {
         try
         {
-            var statuses = await _datatrackService.GetAllVehicleStatusesAsync();
+            EnsureCompanySelected(companyId);
+            var statuses = await _fleet77Service.GetAllVehicleStatusesAsync();
             return Ok(statuses);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
         }
         catch (Exception ex)
         {
@@ -41,16 +104,21 @@ public class VehiclesController : ControllerBase
     /// Get a single vehicle's current status
     /// </summary>
     [HttpGet("statuses/{serial}")]
-    public async Task<ActionResult<VehicleStatus>> GetStatus(string serial)
+    public async Task<ActionResult<VehicleStatus>> GetStatus(string serial, [FromQuery] Guid? companyId)
     {
         try
         {
-            var status = await _datatrackService.GetVehicleStatusAsync(serial);
+            EnsureCompanySelected(companyId);
+            var status = await _fleet77Service.GetVehicleStatusAsync(serial);
             if (status == null)
             {
                 return NotFound(new { error = $"Vehicle {serial} not found" });
             }
             return Ok(status);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
         }
         catch (Exception ex)
         {
@@ -65,12 +133,15 @@ public class VehiclesController : ControllerBase
     [HttpGet("{serial}/locations")]
     public async Task<ActionResult<List<Location>>> GetLocations(
         string serial,
+        [FromQuery] Guid? companyId,
         [FromQuery] long? start,
         [FromQuery] long? end,
         [FromQuery] int? hoursBack)
     {
         try
         {
+            EnsureCompanySelected(companyId);
+            
             long endSecs = end ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             long startSecs;
             
@@ -95,8 +166,12 @@ public class VehiclesController : ControllerBase
                 startSecs = oneMonthAgo;
             }
             
-            var locations = await _datatrackService.GetLocationsAsync(serial, startSecs, endSecs);
+            var locations = await _fleet77Service.GetLocationsAsync(serial, startSecs, endSecs);
             return Ok(locations);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
         }
         catch (Exception ex)
         {
@@ -109,16 +184,21 @@ public class VehiclesController : ControllerBase
     /// Get vehicle details
     /// </summary>
     [HttpGet("{serial}")]
-    public async Task<ActionResult<Vehicle>> GetVehicle(string serial)
+    public async Task<ActionResult<Vehicle>> GetVehicle(string serial, [FromQuery] Guid? companyId)
     {
         try
         {
-            var vehicle = await _datatrackService.GetVehicleAsync(serial);
+            EnsureCompanySelected(companyId);
+            var vehicle = await _fleet77Service.GetVehicleAsync(serial);
             if (vehicle == null)
             {
                 return NotFound(new { error = $"Vehicle {serial} not found" });
             }
             return Ok(vehicle);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
         }
         catch (Exception ex)
         {
@@ -131,12 +211,17 @@ public class VehiclesController : ControllerBase
     /// Get all vehicles
     /// </summary>
     [HttpGet]
-    public async Task<ActionResult<List<Vehicle>>> GetAllVehicles()
+    public async Task<ActionResult<List<Vehicle>>> GetAllVehicles([FromQuery] Guid? companyId)
     {
         try
         {
-            var vehicles = await _datatrackService.GetAllVehiclesAsync();
+            EnsureCompanySelected(companyId);
+            var vehicles = await _fleet77Service.GetAllVehiclesAsync();
             return Ok(vehicles);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
         }
         catch (Exception ex)
         {
@@ -149,16 +234,21 @@ public class VehiclesController : ControllerBase
     /// Enable or disable vehicle starter
     /// </summary>
     [HttpPost("{serial}/starter")]
-    public async Task<ActionResult> SetStarter(string serial, [FromBody] StarterRequest request)
+    public async Task<ActionResult> SetStarter(string serial, [FromBody] StarterRequest request, [FromQuery] Guid? companyId)
     {
         try
         {
-            var success = await _datatrackService.SetStarterAsync(serial, request.Disable);
+            EnsureCompanySelected(companyId);
+            var success = await _fleet77Service.SetStarterAsync(serial, request.Disable);
             if (success)
             {
                 return Ok(new { message = $"Starter {(request.Disable ? "disabled" : "enabled")} for {serial}" });
             }
             return BadRequest(new { error = "Failed to set starter" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
         }
         catch (Exception ex)
         {
@@ -166,29 +256,6 @@ public class VehiclesController : ControllerBase
             return StatusCode(500, new { error = "Failed to set starter" });
         }
     }
-
-    /// <summary>
-    /// Enable or disable vehicle buzzer
-    /// </summary>
-    [HttpPost("{serial}/buzzer")]
-    public async Task<ActionResult> SetBuzzer(string serial, [FromBody] BuzzerRequest request)
-    {
-        try
-        {
-            var success = await _datatrackService.SetBuzzerAsync(serial, request.Disable);
-            if (success)
-            {
-                return Ok(new { message = $"Buzzer {(request.Disable ? "disabled" : "enabled")} for {serial}" });
-            }
-            return BadRequest(new { error = "Failed to set buzzer" });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error setting buzzer for {Serial}", serial);
-            return StatusCode(500, new { error = "Failed to set buzzer" });
-        }
-    }
 }
 
 public record StarterRequest(bool Disable);
-public record BuzzerRequest(bool Disable);

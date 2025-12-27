@@ -14,6 +14,7 @@ public class VehicleStatus
     public double Volts { get; set; }
     public string Name { get; set; } = string.Empty;
     public string? Vin { get; set; }
+    public int? Heading { get; set; }
     
     // Computed properties for frontend
     public DateTime DateTimeUtc => DateTimeOffset.FromUnixTimeSeconds(Date).UtcDateTime;

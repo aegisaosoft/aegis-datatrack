@@ -57,6 +57,11 @@ public class TrackingDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.CompanyName).IsUnique();
+
+            entity.HasOne(e => e.RentalCompany)
+                .WithMany()
+                .HasForeignKey(e => e.RentalCompanyId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         // External Company Vehicle configuration

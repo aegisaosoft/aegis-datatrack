@@ -21,9 +21,22 @@ public class ExternalCompany
     [MaxLength(500)]
     public string? ApiBaseUrl { get; set; }
 
-    [Column("api_key_name")]
-    [MaxLength(100)]
-    public string? ApiKeyName { get; set; }
+    [Column("api_username")]
+    [MaxLength(255)]
+    public string? ApiUsername { get; set; }
+
+    [Column("api_password")]
+    [MaxLength(255)]
+    public string? ApiPassword { get; set; }
+
+    [Column("api_token")]
+    public string? ApiToken { get; set; }
+
+    [Column("token_expires_at")]
+    public DateTime? TokenExpiresAt { get; set; }
+
+    [Column("rental_company_id")]
+    public Guid? RentalCompanyId { get; set; }
 
     [Column("is_active")]
     public bool IsActive { get; set; } = true;
@@ -35,6 +48,7 @@ public class ExternalCompany
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
     // Navigation
+    public virtual RentalCompany? RentalCompany { get; set; }
     public virtual ICollection<ExternalCompanyVehicle> Vehicles { get; set; } = new List<ExternalCompanyVehicle>();
 }
 

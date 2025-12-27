@@ -8,16 +8,45 @@ CREATE TABLE IF NOT EXISTS external_companies (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     company_name VARCHAR(255) NOT NULL,
     api_base_url VARCHAR(500),
-    api_key_name VARCHAR(100),  -- Name of the config key for API credentials
+    api_username VARCHAR(255),
+    api_password VARCHAR(255),
+    api_token TEXT,  -- Cached token after login
+    token_expires_at TIMESTAMPTZ,
+    rental_company_id UUID REFERENCES companies(id) ON DELETE SET NULL,  -- Link to our internal company
     is_active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Unique constraint on company name
-DO $$ BEGIN
-    ALTER TABLE external_companies ADD CONSTRAINT uq_external_companies_name UNIQUE (company_name);
-EXCEPTION WHEN duplicate_object THEN NULL;
+DO $$ 
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'uq_external_companies_name'
+    ) THEN
+        ALTER TABLE external_companies ADD CONSTRAINT uq_external_companies_name UNIQUE (company_name);
+    END IF;
+END $$;
+
+-- Add new columns if table already exists
+DO $$ 
+BEGIN
+    -- Add columns without foreign key first
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'external_companies' AND column_name = 'api_username') THEN
+        ALTER TABLE external_companies ADD COLUMN api_username VARCHAR(255);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'external_companies' AND column_name = 'api_password') THEN
+        ALTER TABLE external_companies ADD COLUMN api_password VARCHAR(255);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'external_companies' AND column_name = 'api_token') THEN
+        ALTER TABLE external_companies ADD COLUMN api_token TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'external_companies' AND column_name = 'token_expires_at') THEN
+        ALTER TABLE external_companies ADD COLUMN token_expires_at TIMESTAMPTZ;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'external_companies' AND column_name = 'rental_company_id') THEN
+        ALTER TABLE external_companies ADD COLUMN rental_company_id UUID REFERENCES companies(id) ON DELETE SET NULL;
+    END IF;
 END $$;
 
 -- Vehicles as they exist in external systems
@@ -41,11 +70,15 @@ CREATE TABLE IF NOT EXISTS external_company_vehicles (
 );
 
 -- Unique external_id per company
-DO $$ BEGIN
-    ALTER TABLE external_company_vehicles 
-    ADD CONSTRAINT uq_external_company_vehicles_ext_id 
-    UNIQUE (external_company_id, external_id);
-EXCEPTION WHEN duplicate_object THEN NULL;
+DO $$ 
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'uq_external_company_vehicles_ext_id'
+    ) THEN
+        ALTER TABLE external_company_vehicles 
+        ADD CONSTRAINT uq_external_company_vehicles_ext_id 
+        UNIQUE (external_company_id, external_id);
+    END IF;
 END $$;
 
 -- Index for lookups
@@ -69,11 +102,15 @@ CREATE TABLE IF NOT EXISTS external_vehicles (
 );
 
 -- One external vehicle can only be linked to one of our vehicles
-DO $$ BEGIN
-    ALTER TABLE external_vehicles 
-    ADD CONSTRAINT uq_external_vehicles_ext_vehicle 
-    UNIQUE (external_company_vehicle_id);
-EXCEPTION WHEN duplicate_object THEN NULL;
+DO $$ 
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'uq_external_vehicles_ext_vehicle'
+    ) THEN
+        ALTER TABLE external_vehicles 
+        ADD CONSTRAINT uq_external_vehicles_ext_vehicle 
+        UNIQUE (external_company_vehicle_id);
+    END IF;
 END $$;
 
 -- Index for lookups
@@ -82,15 +119,6 @@ ON external_vehicles(vehicle_id);
 
 CREATE INDEX IF NOT EXISTS idx_external_vehicles_ext_vehicle 
 ON external_vehicles(external_company_vehicle_id);
-
--- =============================================
--- Insert Datatrack 247 as external company
--- =============================================
-INSERT INTO external_companies (company_name, api_base_url, api_key_name, is_active)
-VALUES ('Datatrack 247', 'https://datatrack247.com/api', 'Datatrack', true)
-ON CONFLICT (company_name) DO UPDATE SET
-    api_base_url = EXCLUDED.api_base_url,
-    updated_at = NOW();
 
 -- =============================================
 -- Views for easy querying

@@ -108,6 +108,13 @@ function VehicleList({
 
   return (
     <div className="flex flex-col h-full">
+      {/* Header with count */}
+      <div className="p-3 border-b border-gray-200 bg-gray-50">
+        <h2 className="font-semibold text-gray-800">
+          Vehicles <span className="text-sm font-normal text-gray-500">({vehicles.length})</span>
+        </h2>
+      </div>
+      
       {/* Search */}
       <div className="p-4 border-b border-gray-200">
         <div className="relative">

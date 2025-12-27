@@ -1,7 +1,9 @@
+using System.Net.Http.Headers;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using VehicleTracker.Api.Data;
 using VehicleTracker.Api.Data.Entities;
+using VehicleTracker.Api.Models;
 
 namespace VehicleTracker.Api.Services;
 
@@ -10,27 +12,45 @@ namespace VehicleTracker.Api.Services;
 /// </summary>
 public interface IExternalVehicleSyncService
 {
-    Task<int> SyncDatatrackVehiclesAsync();
+    Task<SyncResult> SyncExternalCompanyVehiclesAsync(Guid externalCompanyId);
+    Task<SyncResult> SyncDatatrackVehiclesAsync();
     Task<ExternalCompany?> GetDatatrackCompanyAsync();
     Task<List<ExternalCompanyVehicle>> GetUnlinkedExternalVehiclesAsync(Guid? companyId = null);
     Task<ExternalVehicle> LinkVehicleAsync(Guid vehicleId, Guid externalCompanyVehicleId, bool isPrimary = true);
     Task UnlinkVehicleAsync(Guid vehicleId, Guid externalCompanyVehicleId);
 }
 
+public class SyncResult
+{
+    public int Created { get; set; }
+    public int Updated { get; set; }
+    public int Total => Created + Updated;
+}
+
 public class ExternalVehicleSyncService : IExternalVehicleSyncService
 {
     private readonly TrackingDbContext _context;
-    private readonly IDatatrackService _datatrackService;
+    private readonly IExternalAuthService _authService;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<ExternalVehicleSyncService> _logger;
+    
     private const string DatatrackCompanyName = "Datatrack 247";
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
 
     public ExternalVehicleSyncService(
         TrackingDbContext context,
-        IDatatrackService datatrackService,
+        IExternalAuthService authService,
+        IHttpClientFactory httpClientFactory,
         ILogger<ExternalVehicleSyncService> logger)
     {
         _context = context;
-        _datatrackService = datatrackService;
+        _authService = authService;
+        _httpClientFactory = httpClientFactory;
         _logger = logger;
     }
 
@@ -47,8 +67,7 @@ public class ExternalVehicleSyncService : IExternalVehicleSyncService
             company = new ExternalCompany
             {
                 CompanyName = DatatrackCompanyName,
-                ApiBaseUrl = "https://datatrack247.com/api",
-                ApiKeyName = "Datatrack",
+                ApiBaseUrl = "https://fm.datatrack247.com/api",
                 IsActive = true
             };
             _context.ExternalCompanies.Add(company);
@@ -59,91 +78,140 @@ public class ExternalVehicleSyncService : IExternalVehicleSyncService
     }
 
     /// <summary>
-    /// Sync all vehicles from Datatrack API to external_company_vehicles table
+    /// Sync vehicles from any external company using stored credentials
     /// </summary>
-    public async Task<int> SyncDatatrackVehiclesAsync()
+    public async Task<SyncResult> SyncExternalCompanyVehiclesAsync(Guid externalCompanyId)
     {
-        _logger.LogInformation("Starting Datatrack vehicles sync...");
+        _logger.LogInformation("Starting vehicle sync for company {Id}", externalCompanyId);
 
-        var company = await GetDatatrackCompanyAsync();
+        var result = new SyncResult();
+
+        // Get company with valid token
+        var company = await _authService.GetCompanyWithValidTokenAsync(externalCompanyId);
         if (company == null)
         {
-            _logger.LogError("Failed to get/create Datatrack company record");
-            return 0;
+            _logger.LogError("External company {Id} not found", externalCompanyId);
+            return result;
         }
 
-        // Fetch all vehicles from Datatrack API
-        var datatrackVehicles = await _datatrackService.GetAllVehiclesAsync();
-        if (datatrackVehicles == null || datatrackVehicles.Count == 0)
+        if (string.IsNullOrEmpty(company.ApiToken))
         {
-            _logger.LogWarning("No vehicles returned from Datatrack API");
-            return 0;
+            _logger.LogError("No valid token for company {Company}. Login required.", company.CompanyName);
+            throw new InvalidOperationException($"Authentication required for {company.CompanyName}");
         }
 
-        _logger.LogInformation("Fetched {Count} vehicles from Datatrack API", datatrackVehicles.Count);
+        // Fetch vehicles from external API
+        var vehicles = await FetchVehiclesFromExternalApiAsync(company);
+        if (vehicles == null || vehicles.Count == 0)
+        {
+            _logger.LogWarning("No vehicles returned from {Company}", company.CompanyName);
+            return result;
+        }
 
-        int created = 0, updated = 0;
+        _logger.LogInformation("Fetched {Count} vehicles from {Company}", vehicles.Count, company.CompanyName);
 
-        foreach (var dtVehicle in datatrackVehicles)
+        foreach (var vehicle in vehicles)
         {
             try
             {
-                // Check if this vehicle already exists
                 var existing = await _context.ExternalCompanyVehicles
-                    .FirstOrDefaultAsync(v => 
-                        v.ExternalCompanyId == company.Id && 
-                        v.ExternalId == dtVehicle.Serial);
+                    .FirstOrDefaultAsync(v =>
+                        v.ExternalCompanyId == company.Id &&
+                        v.ExternalId == vehicle.Serial);
 
                 if (existing == null)
                 {
-                    // Create new
                     var newVehicle = new ExternalCompanyVehicle
                     {
                         ExternalCompanyId = company.Id,
-                        ExternalId = dtVehicle.Serial,
-                        Name = dtVehicle.Name,
-                        Vin = dtVehicle.Vin,
-                        LicensePlate = dtVehicle.Plate,
-                        Make = dtVehicle.Make,
-                        Model = dtVehicle.Model,
-                        Year = dtVehicle.Year > 0 ? dtVehicle.Year : null,
-                        Color = dtVehicle.ColorName,
-                        Notes = dtVehicle.Notes,
-                        RawData = JsonSerializer.Serialize(dtVehicle),
+                        ExternalId = vehicle.Serial,
+                        Name = vehicle.Name,
+                        Vin = vehicle.Vin,
+                        LicensePlate = vehicle.Plate,
+                        Make = vehicle.Make,
+                        Model = vehicle.Model,
+                        Year = vehicle.Year > 0 ? vehicle.Year : null,
+                        Color = vehicle.ColorName,
+                        Notes = vehicle.Notes,
+                        RawData = JsonSerializer.Serialize(vehicle),
                         IsActive = true,
                         LastSyncedAt = DateTime.UtcNow
                     };
 
                     _context.ExternalCompanyVehicles.Add(newVehicle);
-                    created++;
+                    result.Created++;
                 }
                 else
                 {
-                    // Update existing
-                    existing.Name = dtVehicle.Name;
-                    existing.Vin = dtVehicle.Vin;
-                    existing.LicensePlate = dtVehicle.Plate;
-                    existing.Make = dtVehicle.Make;
-                    existing.Model = dtVehicle.Model;
-                    existing.Year = dtVehicle.Year > 0 ? dtVehicle.Year : null;
-                    existing.Color = dtVehicle.ColorName;
-                    existing.Notes = dtVehicle.Notes;
-                    existing.RawData = JsonSerializer.Serialize(dtVehicle);
+                    existing.Name = vehicle.Name;
+                    existing.Vin = vehicle.Vin;
+                    existing.LicensePlate = vehicle.Plate;
+                    existing.Make = vehicle.Make;
+                    existing.Model = vehicle.Model;
+                    existing.Year = vehicle.Year > 0 ? vehicle.Year : null;
+                    existing.Color = vehicle.ColorName;
+                    existing.Notes = vehicle.Notes;
+                    existing.RawData = JsonSerializer.Serialize(vehicle);
                     existing.LastSyncedAt = DateTime.UtcNow;
                     existing.UpdatedAt = DateTime.UtcNow;
-                    updated++;
+                    result.Updated++;
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error syncing vehicle {Serial}", dtVehicle.Serial);
+                _logger.LogError(ex, "Error syncing vehicle {Serial}", vehicle.Serial);
             }
         }
 
         await _context.SaveChangesAsync();
 
-        _logger.LogInformation("Datatrack sync completed: {Created} created, {Updated} updated", created, updated);
-        return created + updated;
+        _logger.LogInformation("Sync completed for {Company}: {Created} created, {Updated} updated",
+            company.CompanyName, result.Created, result.Updated);
+
+        return result;
+    }
+
+    private async Task<List<Vehicle>> FetchVehiclesFromExternalApiAsync(ExternalCompany company)
+    {
+        var httpClient = _httpClientFactory.CreateClient();
+        httpClient.Timeout = TimeSpan.FromSeconds(30);
+        httpClient.DefaultRequestHeaders.Authorization = 
+            new AuthenticationHeaderValue("ApiKey", company.ApiToken);
+
+        var url = $"{company.ApiBaseUrl?.TrimEnd('/')}/getVehicles";
+
+        try
+        {
+            var response = await httpClient.GetAsync(url);
+            response.EnsureSuccessStatusCode();
+
+            var content = await response.Content.ReadAsStringAsync();
+            var result = JsonSerializer.Deserialize<VehiclesResponse>(content, JsonOptions);
+
+            if (result?.Status != 200)
+            {
+                _logger.LogWarning("API returned status {Status}", result?.Status);
+                return new List<Vehicle>();
+            }
+
+            return result.Data ?? new List<Vehicle>();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching vehicles from {Url}", url);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Sync vehicles from Datatrack (for backward compatibility)
+    /// </summary>
+    public async Task<SyncResult> SyncDatatrackVehiclesAsync()
+    {
+        var company = await GetDatatrackCompanyAsync();
+        if (company == null) return new SyncResult();
+
+        return await SyncExternalCompanyVehiclesAsync(company.Id);
     }
 
     /// <summary>
@@ -169,7 +237,6 @@ public class ExternalVehicleSyncService : IExternalVehicleSyncService
     /// </summary>
     public async Task<ExternalVehicle> LinkVehicleAsync(Guid vehicleId, Guid externalCompanyVehicleId, bool isPrimary = true)
     {
-        // Verify both exist
         var vehicle = await _context.Vehicles.FindAsync(vehicleId);
         if (vehicle == null)
             throw new ArgumentException($"Vehicle {vehicleId} not found");
@@ -178,14 +245,12 @@ public class ExternalVehicleSyncService : IExternalVehicleSyncService
         if (externalVehicle == null)
             throw new ArgumentException($"External vehicle {externalCompanyVehicleId} not found");
 
-        // Check if already linked
         var existingLink = await _context.ExternalVehicles
             .FirstOrDefaultAsync(ev => ev.ExternalCompanyVehicleId == externalCompanyVehicleId);
 
         if (existingLink != null)
             throw new InvalidOperationException($"External vehicle is already linked to vehicle {existingLink.VehicleId}");
 
-        // If setting as primary, unset other primary links for this vehicle
         if (isPrimary)
         {
             var otherPrimaryLinks = await _context.ExternalVehicles
@@ -209,7 +274,7 @@ public class ExternalVehicleSyncService : IExternalVehicleSyncService
         _context.ExternalVehicles.Add(newLink);
         await _context.SaveChangesAsync();
 
-        _logger.LogInformation("Linked vehicle {VehicleId} to external vehicle {ExternalId}", 
+        _logger.LogInformation("Linked vehicle {VehicleId} to external vehicle {ExternalId}",
             vehicleId, externalVehicle.ExternalId);
 
         return newLink;
@@ -221,8 +286,8 @@ public class ExternalVehicleSyncService : IExternalVehicleSyncService
     public async Task UnlinkVehicleAsync(Guid vehicleId, Guid externalCompanyVehicleId)
     {
         var link = await _context.ExternalVehicles
-            .FirstOrDefaultAsync(ev => 
-                ev.VehicleId == vehicleId && 
+            .FirstOrDefaultAsync(ev =>
+                ev.VehicleId == vehicleId &&
                 ev.ExternalCompanyVehicleId == externalCompanyVehicleId);
 
         if (link != null)
@@ -230,7 +295,7 @@ public class ExternalVehicleSyncService : IExternalVehicleSyncService
             _context.ExternalVehicles.Remove(link);
             await _context.SaveChangesAsync();
 
-            _logger.LogInformation("Unlinked vehicle {VehicleId} from external vehicle {ExternalVehicleId}", 
+            _logger.LogInformation("Unlinked vehicle {VehicleId} from external vehicle {ExternalVehicleId}",
                 vehicleId, externalCompanyVehicleId);
         }
     }

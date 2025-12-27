@@ -6,6 +6,16 @@ namespace VehicleTracker.Api.Services;
 
 public interface IDatatrackService
 {
+    /// <summary>
+    /// Set the active external company to use for API calls
+    /// </summary>
+    void SetActiveCompany(Guid externalCompanyId);
+    
+    /// <summary>
+    /// Get currently active external company ID
+    /// </summary>
+    Guid? GetActiveCompanyId();
+    
     Task<List<VehicleStatus>> GetAllVehicleStatusesAsync();
     Task<VehicleStatus?> GetVehicleStatusAsync(string serial);
     Task<List<Location>> GetLocationsAsync(string serial, long startSecs, long endSecs);
@@ -17,10 +27,11 @@ public interface IDatatrackService
 
 public class DatatrackService : IDatatrackService
 {
-    private readonly HttpClient _httpClient;
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IExternalAuthService _authService;
     private readonly ILogger<DatatrackService> _logger;
-    private readonly string _baseUrl;
-    private readonly string _apiKey;
+    
+    private Guid? _activeCompanyId;
     
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -29,27 +40,59 @@ public class DatatrackService : IDatatrackService
     };
 
     public DatatrackService(
-        HttpClient httpClient,
-        IConfiguration configuration,
+        IHttpClientFactory httpClientFactory,
+        IExternalAuthService authService,
         ILogger<DatatrackService> logger)
     {
-        _httpClient = httpClient;
+        _httpClientFactory = httpClientFactory;
+        _authService = authService;
         _logger = logger;
+    }
+
+    public void SetActiveCompany(Guid externalCompanyId)
+    {
+        _activeCompanyId = externalCompanyId;
+        _logger.LogInformation("Active company set to {CompanyId}", externalCompanyId);
+    }
+
+    public Guid? GetActiveCompanyId() => _activeCompanyId;
+
+    private async Task<HttpResponseMessage> SendAsync(string endpoint)
+    {
+        if (!_activeCompanyId.HasValue)
+        {
+            throw new InvalidOperationException("No active company selected. Call SetActiveCompany first.");
+        }
+
+        var company = await _authService.GetCompanyWithValidTokenAsync(_activeCompanyId.Value);
+        if (company == null)
+        {
+            throw new InvalidOperationException($"Company {_activeCompanyId} not found");
+        }
+
+        if (string.IsNullOrEmpty(company.ApiToken))
+        {
+            throw new InvalidOperationException($"No valid token for company {company.CompanyName}. Login required.");
+        }
+
+        var httpClient = _httpClientFactory.CreateClient();
+        httpClient.Timeout = TimeSpan.FromSeconds(30);
         
-        _baseUrl = configuration["Datatrack:BaseUrl"] 
-            ?? throw new InvalidOperationException("Datatrack:BaseUrl not configured");
-        _apiKey = configuration["Datatrack:ApiKey"] 
-            ?? throw new InvalidOperationException("Datatrack:ApiKey not configured");
+        var baseUrl = company.ApiBaseUrl?.TrimEnd('/') ?? "https://fm.datatrack247.com/api";
+        var url = $"{baseUrl}/{endpoint.TrimStart('/')}";
         
-        _httpClient.DefaultRequestHeaders.Authorization = 
-            new AuthenticationHeaderValue("ApiKey", _apiKey);
+        var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization = new AuthenticationHeaderValue("ApiKey", company.ApiToken);
+        
+        _logger.LogDebug("Sending request to {Url}", url);
+        return await httpClient.SendAsync(request);
     }
 
     public async Task<List<VehicleStatus>> GetAllVehicleStatusesAsync()
     {
         try
         {
-            var response = await _httpClient.GetAsync($"{_baseUrl}/getStatuses");
+            var response = await SendAsync("getStatuses");
             response.EnsureSuccessStatusCode();
             
             var content = await response.Content.ReadAsStringAsync();
@@ -74,7 +117,7 @@ public class DatatrackService : IDatatrackService
     {
         try
         {
-            var response = await _httpClient.GetAsync($"{_baseUrl}/getStatus?serial={serial}");
+            var response = await SendAsync($"getStatus?serial={serial}");
             response.EnsureSuccessStatusCode();
             
             var content = await response.Content.ReadAsStringAsync();
@@ -100,8 +143,7 @@ public class DatatrackService : IDatatrackService
     {
         try
         {
-            var url = $"{_baseUrl}/getLocations?serial={serial}&start={startSecs}&end={endSecs}";
-            var response = await _httpClient.GetAsync(url);
+            var response = await SendAsync($"getLocations?serial={serial}&start={startSecs}&end={endSecs}");
             response.EnsureSuccessStatusCode();
             
             var content = await response.Content.ReadAsStringAsync();
@@ -126,7 +168,7 @@ public class DatatrackService : IDatatrackService
     {
         try
         {
-            var response = await _httpClient.GetAsync($"{_baseUrl}/getVehicle?serial={serial}");
+            var response = await SendAsync($"getVehicle?serial={serial}");
             response.EnsureSuccessStatusCode();
             
             var content = await response.Content.ReadAsStringAsync();
@@ -152,7 +194,7 @@ public class DatatrackService : IDatatrackService
     {
         try
         {
-            var response = await _httpClient.GetAsync($"{_baseUrl}/getVehicles");
+            var response = await SendAsync("getVehicles");
             response.EnsureSuccessStatusCode();
             
             var content = await response.Content.ReadAsStringAsync();
@@ -177,8 +219,7 @@ public class DatatrackService : IDatatrackService
     {
         try
         {
-            var url = $"{_baseUrl}/setStarter?serial={serial}&disable={disable.ToString().ToLower()}";
-            var response = await _httpClient.GetAsync(url);
+            var response = await SendAsync($"setStarter?serial={serial}&disable={disable.ToString().ToLower()}");
             response.EnsureSuccessStatusCode();
             
             var content = await response.Content.ReadAsStringAsync();
@@ -197,8 +238,7 @@ public class DatatrackService : IDatatrackService
     {
         try
         {
-            var url = $"{_baseUrl}/setBuzzer?serial={serial}&disable={disable.ToString().ToLower()}";
-            var response = await _httpClient.GetAsync(url);
+            var response = await SendAsync($"setBuzzer?serial={serial}&disable={disable.ToString().ToLower()}");
             response.EnsureSuccessStatusCode();
             
             var content = await response.Content.ReadAsStringAsync();

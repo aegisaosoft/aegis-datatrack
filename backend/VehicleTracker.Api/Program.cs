@@ -38,25 +38,25 @@ if (!string.IsNullOrEmpty(connectionString))
     // Register external vehicle sync service
     builder.Services.AddScoped<IExternalVehicleSyncService, ExternalVehicleSyncService>();
     
-    // Register Datatrack background sync service
-    builder.Services.AddHostedService<DatatrackSyncService>();
+    // Note: Background sync disabled - using manual sync per company instead
+    // builder.Services.AddHostedService<DatatrackSyncService>();
 }
 else
 {
     Console.WriteLine("WARNING: No database configured. Running in API-only mode.");
 }
 
-// Register HttpClient for Datatrack service
-builder.Services.AddHttpClient<IDatatrackService, DatatrackService>(client =>
-{
-    client.Timeout = TimeSpan.FromSeconds(30);
-});
+// Register HttpClient factory
+builder.Services.AddHttpClient();
 
-// Also register DatatrackService without interface for direct access
-builder.Services.AddHttpClient<DatatrackService>(client =>
-{
-    client.Timeout = TimeSpan.FromSeconds(30);
-});
+// Register ExternalAuthService
+builder.Services.AddScoped<IExternalAuthService, ExternalAuthService>();
+
+// Register DatatrackService (legacy - uses IHttpClientFactory internally)
+builder.Services.AddScoped<IDatatrackService, DatatrackService>();
+
+// Register Fleet77Service (new - correct API for fm.datatrack247.com)
+builder.Services.AddScoped<IFleet77Service, Fleet77Service>();
 
 // Add CORS for React frontend
 builder.Services.AddCors(options =>
@@ -92,7 +92,11 @@ if (app.Environment.IsDevelopment())
     });
 }
 
-app.UseHttpsRedirection();
+// Only redirect to HTTPS in production
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
 
 // Enable CORS
 app.UseCors("AllowReactApp");
