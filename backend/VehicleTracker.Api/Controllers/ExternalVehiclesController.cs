@@ -583,20 +583,96 @@ public class ExternalVehiclesController : ControllerBase
             if (rentalCompany == null)
                 return NotFound(new { error = "Rental company not found" });
 
-            // If username and password provided, do login to get accountId/userId
+            // Priority 1: If passHash + accountId provided directly (from Local Storage)
+            if (!string.IsNullOrEmpty(request.PassHash) && !string.IsNullOrEmpty(request.AccountId))
+            {
+                _logger.LogInformation("Using direct passHash + accountId from Local Storage");
+                
+                long userId = 0;
+                
+                // First try userId from request
+                if (!string.IsNullOrEmpty(request.UserId))
+                {
+                    long.TryParse(request.UserId, out userId);
+                    _logger.LogInformation("Using userId from request: {UserId}", userId);
+                }
+                
+                // If no userId in request, try to get from API
+                if (userId == 0)
+                {
+                    userId = await _fleet77Service.GetUserIdWithPassHashAsync(request.ApiUsername ?? "", request.PassHash);
+                }
+
+                if (userId == 0)
+                {
+                    return BadRequest(new { error = "Could not determine userId. Please provide User ID from Local Storage (key: 'user')." });
+                }
+
+                if (!long.TryParse(request.AccountId, out var accountId))
+                {
+                    return BadRequest(new { error = "Invalid Account ID format" });
+                }
+
+                // Create or update external company
+                var externalCompany = await _context.ExternalCompanies
+                    .FirstOrDefaultAsync(ec => ec.RentalCompanyId == request.RentalCompanyId);
+
+                var credentials = $"{accountId}|{userId}|{request.ApiUsername}";
+
+                if (externalCompany == null)
+                {
+                    externalCompany = new ExternalCompany
+                    {
+                        Id = Guid.NewGuid(),
+                        CompanyName = $"{rentalCompany.CompanyName} Tracker",
+                        ApiBaseUrl = "https://admin-api.fleet77.com",
+                        ApiUsername = credentials,
+                        ApiPassword = request.ApiPassword,
+                        ApiToken = request.PassHash,
+                        TokenExpiresAt = DateTime.UtcNow.AddYears(10),
+                        RentalCompanyId = request.RentalCompanyId,
+                        IsActive = true,
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow
+                    };
+                    _context.ExternalCompanies.Add(externalCompany);
+                }
+                else
+                {
+                    externalCompany.ApiUsername = credentials;
+                    externalCompany.ApiPassword = request.ApiPassword;
+                    externalCompany.ApiToken = request.PassHash;
+                    externalCompany.TokenExpiresAt = DateTime.UtcNow.AddYears(10);
+                    externalCompany.UpdatedAt = DateTime.UtcNow;
+                }
+
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Fleet77 credentials saved (direct passHash) for company {CompanyName}: accountId={AccountId}, userId={UserId}", 
+                    rentalCompany.CompanyName, accountId, userId);
+
+                return Ok(new
+                {
+                    message = "Tracker configured successfully",
+                    externalCompanyId = externalCompany.Id,
+                    companyName = rentalCompany.CompanyName,
+                    accountId = accountId,
+                    userId = userId,
+                    tokenValid = true
+                });
+            }
+
+            // Priority 2: If username and password provided, do login to get accountId/userId
             if (!string.IsNullOrEmpty(request.ApiUsername) && !string.IsNullOrEmpty(request.ApiPassword))
             {
                 _logger.LogInformation("Attempting Fleet77 login for user: {Username}", request.ApiUsername);
                 
-                // Try to login and get credentials
+                // Try full login (will attempt to get accountId automatically)
                 var loginResult = await _fleet77Service.LoginAsync(request.ApiUsername, request.ApiPassword);
                 
-                // If login didn't return accountId but we have one manually provided, use it
+                // If auto-discovery failed but accountId provided manually, use it
                 if (loginResult == null && !string.IsNullOrEmpty(request.AccountId))
                 {
-                    _logger.LogInformation("Using manually provided accountId: {AccountId}", request.AccountId);
-                    
-                    // Get userId from a simpler login call
                     var userId = await _fleet77Service.GetUserIdFromLoginAsync(request.ApiUsername, request.ApiPassword);
                     
                     if (userId != 0 && long.TryParse(request.AccountId, out var accountId))
@@ -609,22 +685,22 @@ public class ExternalVehiclesController : ControllerBase
                             Username = request.ApiUsername,
                             Name = request.ApiUsername
                         };
+                        _logger.LogInformation("Using manually provided accountId: {AccountId}", accountId);
                     }
                 }
                 
                 if (loginResult == null)
                 {
                     return BadRequest(new { 
-                        error = "Login failed - could not determine accountId. Please provide Account ID manually.",
+                        error = "Could not connect automatically. Click 'Show advanced options' and enter Account ID and PassHash from Local Storage.",
                         needsAccountId = true
                     });
                 }
 
-                // Check if external company already exists for this rental company
+                // Create or update external company
                 var externalCompany = await _context.ExternalCompanies
                     .FirstOrDefaultAsync(ec => ec.RentalCompanyId == request.RentalCompanyId);
 
-                // Store credentials: "accountId|userId|username"
                 var credentials = $"{loginResult.AccountId}|{loginResult.UserId}|{loginResult.Username}";
 
                 if (externalCompany == null)
@@ -632,7 +708,7 @@ public class ExternalVehiclesController : ControllerBase
                     externalCompany = new ExternalCompany
                     {
                         Id = Guid.NewGuid(),
-                        CompanyName = $"{rentalCompany.CompanyName} - {loginResult.Name}",
+                        CompanyName = $"{rentalCompany.CompanyName} Tracker",
                         ApiBaseUrl = "https://admin-api.fleet77.com",
                         ApiUsername = credentials,
                         ApiPassword = request.ApiPassword,
@@ -664,63 +740,13 @@ public class ExternalVehiclesController : ControllerBase
                     message = "Tracker configured successfully",
                     externalCompanyId = externalCompany.Id,
                     companyName = rentalCompany.CompanyName,
-                    trackerName = loginResult.Name,
                     accountId = loginResult.AccountId,
                     userId = loginResult.UserId,
                     tokenValid = true
                 });
             }
 
-            // Legacy: If accountId/userId/apiToken provided directly
-            if (!string.IsNullOrEmpty(request.AccountId) && !string.IsNullOrEmpty(request.UserId))
-            {
-                var externalCompany = await _context.ExternalCompanies
-                    .FirstOrDefaultAsync(ec => ec.RentalCompanyId == request.RentalCompanyId);
-
-                var credentials = $"{request.AccountId}|{request.UserId}|{request.ApiUsername}";
-
-                if (externalCompany == null)
-                {
-                    externalCompany = new ExternalCompany
-                    {
-                        Id = Guid.NewGuid(),
-                        CompanyName = $"{rentalCompany.CompanyName} Tracker",
-                        ApiBaseUrl = request.ApiBaseUrl ?? "https://admin-api.fleet77.com",
-                        ApiUsername = credentials,
-                        ApiPassword = request.ApiPassword,
-                        ApiToken = request.ApiToken,
-                        TokenExpiresAt = DateTime.UtcNow.AddYears(10),
-                        RentalCompanyId = request.RentalCompanyId,
-                        IsActive = true,
-                        CreatedAt = DateTime.UtcNow,
-                        UpdatedAt = DateTime.UtcNow
-                    };
-                    _context.ExternalCompanies.Add(externalCompany);
-                }
-                else
-                {
-                    externalCompany.ApiUsername = credentials;
-                    if (!string.IsNullOrEmpty(request.ApiPassword))
-                        externalCompany.ApiPassword = request.ApiPassword;
-                    if (!string.IsNullOrEmpty(request.ApiToken))
-                    {
-                        externalCompany.ApiToken = request.ApiToken;
-                        externalCompany.TokenExpiresAt = DateTime.UtcNow.AddYears(10);
-                    }
-                    externalCompany.UpdatedAt = DateTime.UtcNow;
-                }
-
-                await _context.SaveChangesAsync();
-
-                return Ok(new
-                {
-                    message = "Tracker configured (legacy mode)",
-                    externalCompanyId = externalCompany.Id,
-                    tokenValid = !string.IsNullOrEmpty(request.ApiToken)
-                });
-            }
-
-            return BadRequest(new { error = "Please provide username and password" });
+            return BadRequest(new { error = "Please provide username and password, or use advanced options" });
         }
         catch (Exception ex)
         {
@@ -767,9 +793,10 @@ public class SetupTrackerRequest
     public string? ApiBaseUrl { get; set; }
     public string? ApiUsername { get; set; }
     public string? ApiPassword { get; set; }
-    public string? ApiToken { get; set; }  // passHash
+    public string? ApiToken { get; set; }  // legacy passHash
     public string? AccountId { get; set; }  // Fleet77 accountId
     public string? UserId { get; set; }     // Fleet77 userId
+    public string? PassHash { get; set; }   // Direct passHash from Local Storage
 }
 
 #endregion

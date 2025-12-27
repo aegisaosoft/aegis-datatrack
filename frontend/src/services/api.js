@@ -43,9 +43,9 @@ const withCompany = (params = {}) => {
 };
 
 export const companyApi = {
-  // Get all external companies
+  // Get all rental companies with tracker status
   getCompanies: async () => {
-    const response = await api.get('/external/companies');
+    const response = await api.get('/external/rental-companies-with-tracker');
     return response.data;
   },
 

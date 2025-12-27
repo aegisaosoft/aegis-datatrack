@@ -125,19 +125,20 @@ function App() {
   const handleCredentialsSubmit = async (formData) => {
     if (!pendingCompany) return;
 
+    const companyId = pendingCompany.id; // Save before clearing
+
     try {
       setCredentialsLoading(true);
       setCredentialsError(null);
       
-      // Setup tracker with simple username/password - backend handles login
+      // Setup tracker with credentials
       const setupRes = await fetch('/api/external/setup-tracker', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          rentalCompanyId: pendingCompany.id,
+          rentalCompanyId: companyId,
           apiUsername: formData.apiUsername,
-          apiPassword: formData.apiPassword,
-          accountId: formData.accountId || null  // Optional manual accountId
+          apiPassword: formData.apiPassword
         })
       });
 
@@ -149,23 +150,27 @@ function App() {
       const setupData = await setupRes.json();
       console.log('Tracker setup successful:', setupData);
       
-      // Close modal and refresh companies
+      // Close modal
       setShowCredentialsModal(false);
       setPendingCompany(null);
       
-      // Refresh companies list
-      const response = await companyApi.getCompanies();
-      if (response.ok) {
-        const data = await response.json();
-        setCompanies(data);
-        
-        // Find and select the connected company
-        const connectedCompany = data.find(c => c.id === pendingCompany.id);
-        if (connectedCompany && connectedCompany.externalCompanyId) {
-          companyApi.setActiveCompany(connectedCompany.externalCompanyId);
-          setActiveCompany(connectedCompany);
-          setVehicles([]);
-        }
+      // Refresh companies list and auto-select the connected company
+      const data = await companyApi.getCompanies();
+      setCompanies(data);
+      
+      // Find the connected company using externalCompanyId from response
+      const connectedCompany = data.find(c => 
+        c.externalCompanyId === setupData.externalCompanyId || c.id === companyId
+      );
+      
+      console.log('Connected company:', connectedCompany);
+      
+      if (connectedCompany && connectedCompany.externalCompanyId) {
+        // Set active company and trigger vehicle loading
+        companyApi.setActiveCompany(connectedCompany.externalCompanyId);
+        setActiveCompany(connectedCompany);
+        setVehicles([]); // Clear vehicles to trigger reload
+        console.log('Active company set:', connectedCompany);
       }
     } catch (err) {
       console.error('Credentials error:', err);

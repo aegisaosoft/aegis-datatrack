@@ -19,6 +19,7 @@ public interface IFleet77Service
     Task<bool> SetStarterAsync(string serial, bool disable);
     Task<Fleet77LoginResult?> LoginAsync(string username, string password);
     Task<long> GetUserIdFromLoginAsync(string username, string password);
+    Task<long> GetUserIdWithPassHashAsync(string username, string passHash);
     Task<bool> TestConnectionAsync(Guid companyId);
 }
 
@@ -58,13 +59,16 @@ public class Fleet77Service : IFleet77Service
     public Guid? GetActiveCompanyId() => _activeCompanyId;
 
     /// <summary>
-    /// Generate passHash from password (SHA256)
+    /// Generate passHash from password using HMAC-SHA256
+    /// Formula: HMAC-SHA256(key=SECRET, message=password)
     /// </summary>
+    private const string Fleet77Secret = "98unf9832n097pi4jk1df";
+    
     public static string GeneratePassHash(string password)
     {
-        using var sha256 = SHA256.Create();
-        var bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(password));
-        return Convert.ToHexString(bytes).ToLowerInvariant();
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(Fleet77Secret));
+        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(password));
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
     /// <summary>
@@ -326,14 +330,22 @@ public class Fleet77Service : IFleet77Service
                 }
             }
 
-            // Status 200 - full success (rare for login action)
+            // Status 200 - full success
             if (status == 200)
             {
                 long accountId = 0;
                 long userId = currentUserId;
                 string? name = null;
 
-                if (root.TryGetProperty("account", out var account))
+                // Try data.id first (this is where accountId is in actual response)
+                if (root.TryGetProperty("data", out var data))
+                {
+                    if (data.TryGetProperty("id", out var dataId))
+                        accountId = dataId.GetInt64();
+                }
+
+                // Fallback to account.id
+                if (accountId == 0 && root.TryGetProperty("account", out var account))
                 {
                     if (account.TryGetProperty("id", out var accId))
                         accountId = accId.GetInt64();
@@ -352,6 +364,7 @@ public class Fleet77Service : IFleet77Service
 
                 if (accountId != 0 && userId != 0)
                 {
+                    _logger.LogInformation("Fleet77 login success: accountId={AccountId}, userId={UserId}", accountId, userId);
                     return new Fleet77LoginResult
                     {
                         AccountId = accountId,
@@ -381,6 +394,22 @@ public class Fleet77Service : IFleet77Service
         try
         {
             var passHash = GeneratePassHash(password);
+            return await GetUserIdWithPassHashAsync(username, passHash);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting userId from login");
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// Get userId using passHash directly (from Local Storage)
+    /// </summary>
+    public async Task<long> GetUserIdWithPassHashAsync(string username, string passHash)
+    {
+        try
+        {
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var clientId = GenerateClientId();
 
@@ -405,8 +434,12 @@ public class Fleet77Service : IFleet77Service
                 "application/json"
             );
 
+            _logger.LogInformation("Fleet77 login (with passHash) for user: {Username}", username);
+
             var response = await httpClient.PostAsync(Fleet77ApiUrl, content);
             var responseContent = await response.Content.ReadAsStringAsync();
+
+            _logger.LogDebug("Fleet77 login response: {Content}", responseContent);
 
             if (!response.IsSuccessStatusCode)
                 return 0;
@@ -416,34 +449,162 @@ public class Fleet77Service : IFleet77Service
 
             if (root.TryGetProperty("currentUserId", out var currentUserIdProp))
             {
-                return currentUserIdProp.GetInt64();
+                var userId = currentUserIdProp.GetInt64();
+                _logger.LogInformation("Got userId from login: {UserId}", userId);
+                return userId;
             }
 
             return 0;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting userId from login");
+            _logger.LogError(ex, "Error getting userId with passHash");
             return 0;
         }
     }
 
     /// <summary>
-    /// Get accountId by trying multiple Fleet77 API methods
+    /// Get accountId by trying HMAC-authenticated requests
     /// </summary>
     private async Task<long> GetAccountIdAsync(long userId, string passHash)
     {
         var httpClient = _httpClientFactory.CreateClient();
         httpClient.Timeout = TimeSpan.FromSeconds(30);
-        var clientId = GenerateClientId();
 
-        // Method 1: Try getAccounts action
+        // Method 1: Try getAllData with HMAC but accountId=0 (discovery mode)
         try
         {
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var payload1 = new Dictionary<string, object>
+            var nowSecs = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var clientId = GenerateClientId();
+
+            // Build HMAC params with accountId=0
+            var hmacParams = new SortedDictionary<string, object>
             {
-                ["action"] = "getAccounts",
+                ["accountId"] = 0,
+                ["action"] = "getAllData",
+                ["addressing"] = "all",
+                ["isAdmin"] = "false",
+                ["lastModified"] = nowSecs - 86400,
+                ["service"] = "fleet",
+                ["startSecs"] = nowSecs,
+                ["time"] = nowMs,
+                ["userId"] = userId,
+                ["version"] = ApiVersion
+            };
+
+            var queryString = BuildQueryString(hmacParams);
+            var hmac = GenerateHmac(queryString, passHash);
+
+            var payload = new Dictionary<string, object>
+            {
+                ["accountId"] = 0,
+                ["action"] = "getAllData",
+                ["addressing"] = "all",
+                ["isAdmin"] = "false",
+                ["lastModified"] = nowSecs - 86400,
+                ["service"] = "fleet",
+                ["startSecs"] = nowSecs,
+                ["time"] = nowMs,
+                ["userId"] = userId,
+                ["version"] = ApiVersion,
+                ["hmac"] = hmac,
+                ["clientId"] = clientId,
+                ["endpoint"] = "private"
+            };
+
+            var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+            var response = await httpClient.PostAsync(Fleet77ApiUrl, content);
+            var responseContent = await response.Content.ReadAsStringAsync();
+            
+            _logger.LogInformation("Fleet77 getAllData (accountId=0) response: {Content}", 
+                responseContent.Length > 500 ? responseContent.Substring(0, 500) + "..." : responseContent);
+
+            var doc = JsonDocument.Parse(responseContent);
+            var accountId = FindAccountIdInJson(doc.RootElement);
+            if (accountId != 0) return accountId;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("getAllData with accountId=0 failed: {Error}", ex.Message);
+        }
+
+        // Method 2: Try with negative userId as accountId (some APIs use this pattern)
+        try
+        {
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var nowSecs = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var clientId = GenerateClientId();
+            var testAccountId = Math.Abs(userId); // Try absolute value of userId
+
+            var hmacParams = new SortedDictionary<string, object>
+            {
+                ["accountId"] = testAccountId,
+                ["action"] = "getAllData",
+                ["addressing"] = "all",
+                ["isAdmin"] = "false",
+                ["lastModified"] = nowSecs - 86400,
+                ["service"] = "fleet",
+                ["startSecs"] = nowSecs,
+                ["time"] = nowMs,
+                ["userId"] = userId,
+                ["version"] = ApiVersion
+            };
+
+            var queryString = BuildQueryString(hmacParams);
+            var hmac = GenerateHmac(queryString, passHash);
+
+            var payload = new Dictionary<string, object>
+            {
+                ["accountId"] = testAccountId,
+                ["action"] = "getAllData",
+                ["addressing"] = "all",
+                ["isAdmin"] = "false",
+                ["lastModified"] = nowSecs - 86400,
+                ["service"] = "fleet",
+                ["startSecs"] = nowSecs,
+                ["time"] = nowMs,
+                ["userId"] = userId,
+                ["version"] = ApiVersion,
+                ["hmac"] = hmac,
+                ["clientId"] = clientId,
+                ["endpoint"] = "private"
+            };
+
+            var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+            var response = await httpClient.PostAsync(Fleet77ApiUrl, content);
+            var responseContent = await response.Content.ReadAsStringAsync();
+            
+            _logger.LogInformation("Fleet77 getAllData (accountId={TestAccountId}) response: {Content}", 
+                testAccountId,
+                responseContent.Length > 500 ? responseContent.Substring(0, 500) + "..." : responseContent);
+
+            var doc = JsonDocument.Parse(responseContent);
+            
+            // Check if we got valid data (status 200)
+            if (doc.RootElement.TryGetProperty("status", out var statusProp) && statusProp.GetInt32() == 200)
+            {
+                var accountId = FindAccountIdInJson(doc.RootElement);
+                if (accountId != 0) return accountId;
+                
+                // If we got status 200, the testAccountId might be valid
+                return testAccountId;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("getAllData with abs(userId) failed: {Error}", ex.Message);
+        }
+
+        // Method 3: Try selectAccount action
+        try
+        {
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var clientId = GenerateClientId();
+
+            var payload = new Dictionary<string, object>
+            {
+                ["action"] = "selectAccount",
                 ["service"] = "fleet",
                 ["version"] = ApiVersion,
                 ["time"] = nowMs,
@@ -453,28 +614,30 @@ public class Fleet77Service : IFleet77Service
                 ["endpoint"] = "private"
             };
 
-            var content1 = new StringContent(JsonSerializer.Serialize(payload1), Encoding.UTF8, "application/json");
-            var response1 = await httpClient.PostAsync(Fleet77ApiUrl, content1);
-            var responseContent1 = await response1.Content.ReadAsStringAsync();
+            var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+            var response = await httpClient.PostAsync(Fleet77ApiUrl, content);
+            var responseContent = await response.Content.ReadAsStringAsync();
             
-            _logger.LogInformation("Fleet77 getAccounts response: {Content}", responseContent1);
+            _logger.LogInformation("Fleet77 selectAccount response: {Content}", responseContent);
 
-            var doc1 = JsonDocument.Parse(responseContent1);
-            var accountId = FindAccountIdInJson(doc1.RootElement);
+            var doc = JsonDocument.Parse(responseContent);
+            var accountId = FindAccountIdInJson(doc.RootElement);
             if (accountId != 0) return accountId;
         }
         catch (Exception ex)
         {
-            _logger.LogDebug("getAccounts failed: {Error}", ex.Message);
+            _logger.LogDebug("selectAccount failed: {Error}", ex.Message);
         }
 
-        // Method 2: Try getUserAccounts action  
+        // Method 4: Try getAccountList action
         try
         {
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var payload2 = new Dictionary<string, object>
+            var clientId = GenerateClientId();
+
+            var payload = new Dictionary<string, object>
             {
-                ["action"] = "getUserAccounts",
+                ["action"] = "getAccountList",
                 ["service"] = "fleet",
                 ["version"] = ApiVersion,
                 ["time"] = nowMs,
@@ -484,81 +647,19 @@ public class Fleet77Service : IFleet77Service
                 ["endpoint"] = "private"
             };
 
-            var content2 = new StringContent(JsonSerializer.Serialize(payload2), Encoding.UTF8, "application/json");
-            var response2 = await httpClient.PostAsync(Fleet77ApiUrl, content2);
-            var responseContent2 = await response2.Content.ReadAsStringAsync();
+            var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+            var response = await httpClient.PostAsync(Fleet77ApiUrl, content);
+            var responseContent = await response.Content.ReadAsStringAsync();
             
-            _logger.LogInformation("Fleet77 getUserAccounts response: {Content}", responseContent2);
+            _logger.LogInformation("Fleet77 getAccountList response: {Content}", responseContent);
 
-            var doc2 = JsonDocument.Parse(responseContent2);
-            var accountId = FindAccountIdInJson(doc2.RootElement);
+            var doc = JsonDocument.Parse(responseContent);
+            var accountId = FindAccountIdInJson(doc.RootElement);
             if (accountId != 0) return accountId;
         }
         catch (Exception ex)
         {
-            _logger.LogDebug("getUserAccounts failed: {Error}", ex.Message);
-        }
-
-        // Method 3: Try getUser action
-        try
-        {
-            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var payload3 = new Dictionary<string, object>
-            {
-                ["action"] = "getUser",
-                ["service"] = "fleet",
-                ["version"] = ApiVersion,
-                ["time"] = nowMs,
-                ["userId"] = userId,
-                ["passHash"] = passHash,
-                ["clientId"] = clientId,
-                ["endpoint"] = "private"
-            };
-
-            var content3 = new StringContent(JsonSerializer.Serialize(payload3), Encoding.UTF8, "application/json");
-            var response3 = await httpClient.PostAsync(Fleet77ApiUrl, content3);
-            var responseContent3 = await response3.Content.ReadAsStringAsync();
-            
-            _logger.LogInformation("Fleet77 getUser response: {Content}", responseContent3);
-
-            var doc3 = JsonDocument.Parse(responseContent3);
-            var accountId = FindAccountIdInJson(doc3.RootElement);
-            if (accountId != 0) return accountId;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug("getUser failed: {Error}", ex.Message);
-        }
-
-        // Method 4: Try init action
-        try
-        {
-            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var payload4 = new Dictionary<string, object>
-            {
-                ["action"] = "init",
-                ["service"] = "fleet",
-                ["version"] = ApiVersion,
-                ["time"] = nowMs,
-                ["userId"] = userId,
-                ["passHash"] = passHash,
-                ["clientId"] = clientId,
-                ["endpoint"] = "private"
-            };
-
-            var content4 = new StringContent(JsonSerializer.Serialize(payload4), Encoding.UTF8, "application/json");
-            var response4 = await httpClient.PostAsync(Fleet77ApiUrl, content4);
-            var responseContent4 = await response4.Content.ReadAsStringAsync();
-            
-            _logger.LogInformation("Fleet77 init response: {Content}", responseContent4);
-
-            var doc4 = JsonDocument.Parse(responseContent4);
-            var accountId = FindAccountIdInJson(doc4.RootElement);
-            if (accountId != 0) return accountId;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug("init failed: {Error}", ex.Message);
+            _logger.LogDebug("getAccountList failed: {Error}", ex.Message);
         }
 
         _logger.LogWarning("Could not determine accountId from any Fleet77 API method");
@@ -572,6 +673,26 @@ public class Fleet77Service : IFleet77Service
     {
         if (element.ValueKind == JsonValueKind.Object)
         {
+            // First check for data.statuses array (from getAllData response)
+            if (element.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object)
+            {
+                if (data.TryGetProperty("statuses", out var statuses) && statuses.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var status in statuses.EnumerateArray())
+                    {
+                        if (status.TryGetProperty("accountId", out var accId) && accId.ValueKind == JsonValueKind.Number)
+                        {
+                            var val = accId.GetInt64();
+                            if (val > 1000000)
+                            {
+                                _logger.LogInformation("Found accountId in statuses: {AccountId}", val);
+                                return val;
+                            }
+                        }
+                    }
+                }
+            }
+
             foreach (var prop in element.EnumerateObject())
             {
                 // Direct accountId property

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Eye, EyeOff, Truck, Key, User, Hash } from 'lucide-react';
+import { Eye, EyeOff, Truck, Key, User } from 'lucide-react';
 
 export default function CredentialsModal({ 
   company, 
@@ -10,11 +10,9 @@ export default function CredentialsModal({
 }) {
   const [form, setForm] = useState({
     apiUsername: '',
-    apiPassword: '',
-    accountId: ''  // Optional - for manual entry
+    apiPassword: ''
   });
   const [showPassword, setShowPassword] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -45,7 +43,7 @@ export default function CredentialsModal({
               {/* Info box */}
               <div className="bg-blue-50 p-4 rounded-lg">
                 <p className="text-sm text-blue-800">
-                  Enter your Fleet77 / DataTrack247 login credentials to connect vehicle tracking.
+                  Enter your Fleet77 / DataTrack247 login credentials.
                 </p>
               </div>
 
@@ -93,54 +91,12 @@ export default function CredentialsModal({
                   </button>
                 </div>
               </div>
-
-              {/* Advanced options toggle */}
-              <button
-                type="button"
-                onClick={() => setShowAdvanced(!showAdvanced)}
-                className="text-sm text-blue-600 hover:text-blue-800"
-              >
-                {showAdvanced ? '▼ Hide advanced options' : '▶ Show advanced options'}
-              </button>
-
-              {/* Advanced: Account ID */}
-              {showAdvanced && (
-                <div className="bg-gray-50 p-4 rounded-lg space-y-3">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Account ID (optional)
-                    </label>
-                    <div className="relative">
-                      <Hash className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-                      <input
-                        type="text"
-                        value={form.accountId}
-                        onChange={(e) => setForm({ ...form, accountId: e.target.value })}
-                        className="w-full pl-10 pr-4 py-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        placeholder="e.g. 1855564010"
-                      />
-                    </div>
-                    <p className="text-xs text-gray-500 mt-1">
-                      Find in Local Storage → account → id on fm.datatrack247.com
-                    </p>
-                  </div>
-                </div>
-              )}
             </div>
 
             {/* Error message */}
             {error && (
               <div className="mt-4 p-3 bg-red-100 text-red-700 rounded-lg text-sm">
                 ⚠️ {error}
-                {error.includes('accountId') && !showAdvanced && (
-                  <button
-                    type="button"
-                    onClick={() => setShowAdvanced(true)}
-                    className="block mt-2 text-blue-600 underline"
-                  >
-                    Enter Account ID manually
-                  </button>
-                )}
               </div>
             )}
 
